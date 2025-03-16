@@ -4,7 +4,6 @@ sys.path.append('.')
 import os
 import pickle
 from collections import OrderedDict
-
 from prog_solver.z3_utils import execute_z3_test
 
 

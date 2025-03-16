@@ -9,6 +9,7 @@ from func_timeout import func_timeout
 
 from prog_solver.z3_utils import make_z3_enum_line, execute_z3_test
 
+
 def break_down_func_var():
     pass
 

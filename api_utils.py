@@ -41,10 +41,11 @@ def register_base_args(parser):
     parser.add_argument('--do_impose_prediction', default=False, action='store_true')
     register_query_args(parser)
 
+
 def config_args_and_api(args):
     if args.batch_size == -1:
         args.batch_size = 1
-    openai.api_requestor.TIMEOUT_SECS = 60
+    # openai.api_requestor.TIMEOUT_SECS = 60
 
     if args.engine in ["text-davinci-002", "text-davinci-003", "code-davinci-001", "code-davinci-002"]:
         openai.api_key = os.getenv("OPENAI_API_KEY")

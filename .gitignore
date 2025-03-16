@@ -73,7 +73,8 @@ docs/_build/
 
 # PyBuilder
 target/
-
+misc/*
+hfcache/*
 # Jupyter Notebook
 .ipynb_checkpoints
 

@@ -48,7 +48,7 @@ def run_evaluation(args, test_data, responses, print_perplexity=False, return_ve
     norms = np.array([[x.norm_logprob for x in preds] for preds in predictions])
     avg_sum = sums.mean(axis=1).mean(axis=0)
     avg_norm = norms.mean(axis=1).mean(axis=0)
-
+   
     if print_perplexity:
         print("AVG Logprob: {:.4f}".format(avg_sum))
         print("AVG Norm Logprob: {:.4f}".format(avg_norm))
@@ -105,6 +105,7 @@ def predict_framework(args):
     task_max_tokens = task_helper.get_completion_length()
     task_stop_token = task_helper.get_train_sep()
     cache_filename = manual_query_result_filename_func(args)
+    # replace this line with running task with real responses.
     responses = run_completion_tasks_with_cache(args, cache_filename, prompts_to_complete, task_max_tokens, task_stop_token)
     responses = [flatten_nested_list(resps_by_example) for resps_by_example in responses]
 
