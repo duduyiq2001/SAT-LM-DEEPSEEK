@@ -7,7 +7,7 @@ from enum import Enum
 
 TAB_STR = "    "
 CHOICE_INDEXES = ["(A)", "(B)", "(C)", "(D)", "(E)"]
-
+IF_PRINTED = False
 class CodeTranslator:
     class LineType(Enum):
         DECL = 1
@@ -386,5 +386,9 @@ class LSATSatProblem:
 
         # each block should express one option
         option_blocks = [CodeTranslator.translate_constraint(option, scoped_list_to_type) for option in self.options]
+        text = CodeTranslator.assemble_standard_code(declaration_lines, pre_condidtion_lines, option_blocks)
+        if not IF_PRINTED:
+            print(f'assembled code is {text}')
+            IF_PRINTED = True
 
-        return CodeTranslator.assemble_standard_code(declaration_lines, pre_condidtion_lines, option_blocks)
+        return text

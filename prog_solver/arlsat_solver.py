@@ -18,11 +18,14 @@ def hash_of_code(code, size=16):
 def execution_test(code, filename=None):
     if filename is None:
         filename = hash_of_code(code)
+    
     filename = join(PREFIX, filename + ".py")
+    # Add directory creation
+    os.makedirs(PREFIX, exist_ok=True) 
     with open(filename, "w") as f:
         f.write(code)
     try:
-        output = check_output(["python", filename], stderr=subprocess.STDOUT, timeout=1.0)
+        output = check_output(["python3", filename], stderr=subprocess.STDOUT, timeout=1.0)
     except subprocess.CalledProcessError as e:
         output = e.output.decode("utf-8").strip().splitlines()[-1]
         result = (False, "ExecutionError " + output)

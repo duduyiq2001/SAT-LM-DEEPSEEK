@@ -1,3 +1,10 @@
+"""User Input -> Argument Parsing 
+-> Signature Generation (LM) 
+-> Signature Analysis 
+-> Example Selection 
+-> Code Translation (LM) 
+-> Z3 Execution 
+-> Result Validation"""
 import os
 import argparse
 import itertools
@@ -19,6 +26,15 @@ from task_helper import TaskHelper, load_train_test_set
 from run_manual import run_evaluation, get_eval_split_abbrev
 from task_evaluator import TaskEvaluator, get_task_evaluator, Prediction, print_tabular_results
 
+"""Registers multi-stage specific command-line arguments
+    Args:
+        parser (argparse.ArgumentParser): Parent parser to extend
+    Adds:
+        --sig_method: Signature generation approach
+        --sig_style_template: Prompt styling template
+        --num_trans_shots: Number of examples for translation
+        --trans_setting: Translation configuration preset
+    """
 def register_multistage_args(parser):
     parser.add_argument('--sig_method', type=str, default="manual", choices=["manual"])
     parser.add_argument('--sig_style_template', type=str, default="sigtpl")
@@ -34,6 +50,15 @@ TRANA_STAGE = "TRANS"
 TRANS_ANNOTATION_DIR = "annotations"
 
 class MultiStageTaskHelper:
+    """Base class for stage-specific handlers
+    Subclasses:
+        SigArLSATTaskHelper: Signature generation for LSAT
+        TransArLSATTaskHelper: Code translation for LSAT
+    Methods:
+        prompt_func(): Builds stage-specific prompts
+        get_train_sep(): Returns example separator
+    """
+
     style_to_completion_length = {}
     style_to_train_sep = {}
 
@@ -147,6 +172,13 @@ class TransArLSATTaskHelper(SigStageHelper):
 
 
 class SignatureInfo:
+    """Analyzes generated signature code for key components
+    Methods:
+        extract_keywords(): Identifies critical Z3 elements
+    Properties:
+        keywords: Set of found Z3 constructs {enums, functions, etc}
+        style_template: Prompt style used for generation
+    """
     def __init__(self, completion, style_template):
         self.completion = completion
         self.style_template = style_template
@@ -200,6 +232,13 @@ class SignatureInfo:
 
 
 class TransSetting:
+    """Manages translation parameters and example selection
+    Key Methods:
+        shot_selection(): Chooses best examples via signature matching
+        construct_prompt(): Builds final code generation prompt
+    Presets:
+        'setupsatlm': Default Z3-based translation configuration
+    """
     SETTING_TO_MATHOD = {
         "setupsatlm": {
             "question_style": "satlm",
@@ -297,6 +336,9 @@ def read_manual_prompt(task, stage, prompt_id, style_template):
 
 
 def sig_stage_result_filename_func(args):
+    """Generates cache filenames for signature stage
+    Pattern: multisgate-sig-[task]--[engine]--[split]--[params]
+    """
     if args.sig_method == "manual":
         prompt_id = "manual" + args.sig_prompt_id
     else:
@@ -314,6 +356,9 @@ def sig_stage_result_filename_func(args):
     )
 
 def trans_stage_result_filename_func(args):
+    """Generates cache filenames for translation stage
+    Pattern: multisgate-trans-[task]--[sig params]--[trans params]
+    """
     if args.sig_method == "manual":
         sig_p_id = "manual" + args.sig_prompt_id
     else:
@@ -333,6 +378,12 @@ def trans_stage_result_filename_func(args):
 
 
 def parse_problem_signatures(args, responses, task_helper):
+    """Converts LM outputs to SignatureInfo objects
+    Args:
+        responses: Raw LM completion texts
+    Returns:
+        List of analyzed signature objects
+    """
     signatures = []
     for reps in responses:
         sigs = []
@@ -346,6 +397,17 @@ def parse_problem_signatures(args, responses, task_helper):
     return signatures
 
 def run_signature_stage(args, test_data):
+    """Generates formal problem signatures using LM
+    Args:
+        test_data: List of problem instances
+    Returns:
+        problem_signatures: List[SignatureInfo] 
+    Process:
+        - Constructs signature prompts
+        - Executes LM completion
+        - Parses output signatures
+    """
+
     task_helper = SigStageHelper.from_taskname(args.task, args.sig_style_template)
 
     # construct signature prompt
@@ -382,6 +444,13 @@ TASK_ANNOTATION_DICT = {
 }
 
 def read_trans_annotations(args):
+    """Loads human-annotated translation examples
+    Returns:
+        List of annotated examples with:
+            - Natural language problem
+            - Signature code
+            - Z3 solution code
+    """
     prefix = join(TRANS_ANNOTATION_DIR, args.task)
 
     annotation_list = TASK_ANNOTATION_DICT[args.task]
@@ -411,6 +480,15 @@ def strip_question_head(x):
 
 
 def run_translation_stage(args, test_data, problem_signatures):
+    """Converts signatures to executable Z3 code
+    Args:
+        problem_signatures: Output from signature stage
+    Key Operations:
+        - Selects relevant training examples
+        - Generates code prompts
+        - Executes code generation
+        - Evaluates final outputs
+    """
     sig_helper = SigStageHelper.from_taskname(args.task, args.sig_style_template)
     trans_setting = TransSetting(args)
 
@@ -443,7 +521,15 @@ def run_translation_stage(args, test_data, problem_signatures):
     args.style_template = trans_setting.get_style_template()
     eval_results = run_evaluation(args, test_data, responses)
 
-
+"""Orchestrates the two-stage reasoning pipeline
+    Flow:
+        1. Signature Generation: Create formal problem representations
+        2. Translation: Convert signatures to executable code
+    Args:
+        args: Configured runtime parameters
+    Calls:
+        run_signature_stage() -> run_translation_stage()
+"""
 def multistage_prompting(args):
     _, test_data = load_train_test_set(args)
 
