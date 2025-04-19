@@ -31,7 +31,7 @@ def execute_z3_test(code, filename=None, flag_keepfile=False, timeout=1.0, use_c
     with open(filename, "w") as f:
         f.write(code)
     try:
-        output = check_output(["python", filename], stderr=subprocess.STDOUT, timeout=timeout)
+        output = check_output(["python3", filename], stderr=subprocess.STDOUT, timeout=timeout)
     except subprocess.CalledProcessError as e:
         output = e.output.decode("utf-8").strip().splitlines()[-1]
         result = (False, "ExecutionError " + output)

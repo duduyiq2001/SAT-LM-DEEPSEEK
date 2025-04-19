@@ -1,3 +1,10 @@
+"""
+Manual prompting module for solving reasoning tasks.
+
+This module provides functionality for using pre-defined manual prompts
+to solve reasoning tasks. It handles prompt construction, evaluation,
+and result caching for language model inference.
+"""
 import os
 import argparse
 import itertools
@@ -21,9 +28,29 @@ from task_helper import TaskHelper, load_train_test_set
 from task_evaluator import TaskEvaluator, get_task_evaluator, Prediction, print_tabular_results
 
 def get_eval_split_abbrev(args):
+    """Get abbreviated name for evaluation split.
+    
+    Args:
+        args: Command line arguments
+        
+    Returns:
+        str: Abbreviated name for the evaluation split
+    """
     return args.eval_split
 
 def run_evaluation(args, test_data, responses, print_perplexity=False, return_verbose=False):
+    """Run evaluation on model responses.
+    
+    Args:
+        args: Command line arguments
+        test_data (list): Test examples
+        responses (list): Model responses for each test example
+        print_perplexity (bool): Whether to print perplexity metrics
+        return_verbose (bool): Whether to return detailed results
+        
+    Returns:
+        dict: Evaluation results including accuracy and optionally perplexity
+    """
     evaluator = get_task_evaluator(args.task)
 
     prompting_style = args.style_template
@@ -50,10 +77,20 @@ def run_evaluation(args, test_data, responses, print_perplexity=False, return_ve
     avg_norm = norms.mean(axis=1).mean(axis=0)
    
     if print_perplexity:
-        print("AVG Logprob: {:.4f}".format(avg_sum))
-        print("AVG Norm Logprob: {:.4f}".format(avg_norm))
+        # Comment out logprob prints to avoid terminal spam
+        # print("AVG Logprob: {:.4f}".format(avg_sum))
+        # print("AVG Norm Logprob: {:.4f}".format(avg_norm))
+        pass
 
     eval_results = evaluator.evaluate(predictions, test_data, prompting_style, train_sep=task_helper.get_train_sep(), return_verbose=return_verbose)
+    
+    # Print evaluation results clearly
+    print("\n===== EVALUATION RESULTS =====")
+    for key, value in eval_results.items():
+        if key not in ["avg_logprob", "avg_normlogprob"]:
+            print(f"{key}: {value}")
+    print("=============================\n")
+    
     eval_results["avg_logprob"] = sums.mean(axis=1).mean(axis=0)
     eval_results["avg_normlogprob"] = norms.mean(axis=1).mean(axis=0)
     if return_verbose:
@@ -67,22 +104,49 @@ def run_evaluation(args, test_data, responses, print_perplexity=False, return_ve
 
 
 def register_manual_args(parser):
+    """Register manual prompting specific arguments.
+    
+    Args:
+        parser (argparse.ArgumentParser): The argument parser to extend
+    """
     parser.add_argument('--manual_prompt_id', type=str, default=None, required=True)
     parser.add_argument('--style_template', type=str, default="default")
 
 def manual_query_result_filename_func(args):
-    return "misc/{}--eng{}--{}{}-{}--manual{}--numsamp{}--temp{}--sty{}--predictions.json".format(
+    """Generate filename for caching manual query results.
+    
+    Args:
+        args: Command line arguments
+        
+    Returns:
+        str: Filename for caching results
+    """
+    model_suffix = f"--{args.model}" if hasattr(args, "model") else ""
+    return "misc/{}--{}{}-{}--manual{}--numsamp{}--temp{}--sty{}{}--predictions.json".format(
         args.task,
-        args.engine,
         get_eval_split_abbrev(args),
         args.slice_dev, args.slice_dev + args.num_dev,
         args.manual_prompt_id,
         args.num_samples,
         args.temperature,
-        args.style_template
+        args.style_template,
+        model_suffix
     )
 
 def read_manual_prompt(task, prompt_id, style_template):    
+    """Read manual prompt from file.
+    
+    Args:
+        task (str): Task name
+        prompt_id (str): Prompt identifier
+        style_template (str): Style template
+        
+    Returns:
+        str: Manual prompt text
+        
+    Raises:
+        AssertionError: If style template doesn't match
+    """
     prompt_lines = read_jsonline(f'manual_prompts/{task}.jsonline')
     d = dict([(x["id"], x) for x in prompt_lines])
     selected = d[prompt_id]
@@ -90,6 +154,17 @@ def read_manual_prompt(task, prompt_id, style_template):
     return selected["prompt"]
 
 def predict_framework(args):
+    """Run prediction framework with manual prompts.
+    
+    Process:
+        1. Load dataset
+        2. Create prompts
+        3. Query LM with caching
+        4. Evaluate responses
+        
+    Args:
+        args: Command line arguments
+    """
     train_data, test_data = load_train_test_set(args)
     task_helper = TaskHelper.from_taskname(args.task, args.style_template)
 
@@ -112,12 +187,29 @@ def predict_framework(args):
     eval_results = run_evaluation(args, test_data, responses)
 
 def eval_framework(args):
+    """Run evaluation-only framework with cached responses.
+    
+    Process:
+        1. Load dataset
+        2. Load cached responses
+        3. Evaluate responses
+        
+    Args:
+        args: Command line arguments
+    """
     _, test_data = load_train_test_set(args)
     responses = read_json(manual_query_result_filename_func(args))
     responses = [flatten_nested_list(resps_by_example) for resps_by_example in responses]
     eval_results = run_evaluation(args, test_data, responses)
 
 def main():
+    """Main entry point for manual prompting.
+    
+    Process:
+        1. Parse arguments
+        2. Configure API
+        3. Run prediction or evaluation
+    """
     parser = argparse.ArgumentParser()
     register_base_args(parser)
     register_manual_args(parser)

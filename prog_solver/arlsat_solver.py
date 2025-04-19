@@ -38,13 +38,54 @@ def execution_test(code, filename=None):
     return (True,  output.splitlines())
 
 
-def arlsat_satlm_exec(completion):
+def arlsat_satlm_exec(completion, verbose=True):
+    """
+    Execute the generated Z3 code for ARLSAT problems.
+    
+    Args:
+        completion (str): The generated Z3 code
+        verbose (bool): Whether to print execution information
+    
+    Returns:
+        tuple: (success_status, result)
+    """
+    if verbose:
+        print("\n" + "="*80)
+        print("🔵 EXECUTING Z3 CODE LOCALLY 🔵")
+        print("="*80)
+        print("Generated code:")
+        print("-"*40)
+        print(completion[:300] + "..." if len(completion) > 300 else completion)
+        print("-"*40)
+    
     try:
         code = LSATSatProblem.from_raw_statements(completion).to_standard_code()
-    except:
-        result = (False, "CompileError")
+        if verbose:
+            print("Converted to standard code:")
+            print("-"*40)
+            print(code[:300] + "..." if len(code) > 300 else code)
+            print("-"*40)
+    except Exception as e:
+        result = (False, f"CompileError: {str(e)}")
+        if verbose:
+            print("❌ COMPILATION ERROR:")
+            print(str(e))
+            print("="*80)
         return result
-    return execution_test(code)
+    
+    execution_result = execution_test(code)
+    
+    if verbose:
+        print("Execution result:")
+        print("-"*40)
+        print(f"Success: {execution_result[0]}")
+        if execution_result[0]:
+            print(f"Output: {execution_result[1]}")
+        else:
+            print(f"Error: {execution_result[1]}")
+        print("="*80 + "\n")
+    
+    return execution_result
 
 
 def annotation_sanity_check():

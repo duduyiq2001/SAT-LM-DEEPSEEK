@@ -1,3 +1,10 @@
+"""
+Task evaluation module for assessing model performance on reasoning tasks.
+
+This module provides evaluators for different reasoning tasks, including
+methods for parsing completions, extracting answers, computing evaluation
+metrics, and comparing predictions to ground truth.
+"""
 import os
 import argparse
 import sys
@@ -25,11 +32,33 @@ EVALUATOR_REGISTRY = {}
 Prediction = namedtuple('Prediction', ['completion', 'prompt', 'logprob', 'norm_logprob'])
 
 def print_tabular_results(row_id, eval_result):
+    """Print evaluation results in a tabular format.
+    
+    Args:
+        row_id: Identifier for the evaluation row
+        eval_result (dict): Evaluation metrics
+    """
     num_contents = [ "%.2f" % (eval_result["accuracy"] * 100), "%.2f" % (eval_result["consistency"] * 100),
         str(eval_result["avg_logprob"]), str(eval_result["avg_normlogprob"])]
     print("\t".join(["TABINFO", str(row_id)] + num_contents))
 
 class TaskEvaluator(ABC):
+    """Base class for task-specific evaluators.
+    
+    This abstract class provides the interface and shared functionality
+    for evaluating model outputs on reasoning tasks. Task-specific evaluators
+    should inherit from this class and implement its abstract methods.
+    
+    Attributes:
+        do_printing (bool): Whether to print detailed outputs
+        do_impose_prediction (bool): Whether to impose predictions when none are found
+        do_voting (bool): Whether to use voting among multiple samples
+        NULL_ANSWER (str): Placeholder for null/missing answers
+        EXCEPTION (str): Placeholder for exceptions during evaluation
+        TIMEOUT (str): Placeholder for timeouts during evaluation
+        AMBIG (str): Placeholder for ambiguous answers
+        UNSAT (str): Placeholder for unsatisfiable problems
+    """
     do_printing = False
     do_impose_prediction = False
     do_voting = False
@@ -41,11 +70,19 @@ class TaskEvaluator(ABC):
 
     @classmethod
     def get_task_name(cls):
+        """Extract task name from the evaluator class name.
+        
+        Returns:
+            str: Lowercase task name
+        """
         [task_name] = re.match("(.+)Evaluator", cls.__name__).groups()
         return task_name.lower()
 
     def __init_subclass__(cls, **kwargs):
-        """Register all children in registry"""
+        """Register all children in registry.
+        
+        This automatically registers all subclasses in the EVALUATOR_REGISTRY.
+        """
         super().__init_subclass__(**kwargs)
         if cls == TaskEvaluator:
             # print(f"{cls} is abstract!")
@@ -55,6 +92,16 @@ class TaskEvaluator(ABC):
 
     @classmethod
     def process_instance(cls, pred, ref, prompting_style=None):
+        """Process a single instance's predictions.
+        
+        Args:
+            pred (list): Predictions for an instance
+            ref (dict): Reference/ground truth for an instance
+            prompting_style (str, optional): Style of prompting used
+            
+        Returns:
+            dict: Processed instance with answers and explanations
+        """
         choices = []
         gt = cls.postprocess_ground_truth(ref["label"])
         null_ans = cls.NULL_ANSWER
@@ -79,18 +126,47 @@ class TaskEvaluator(ABC):
 
     @classmethod
     def enter_evaluation(cls):
+        """Perform setup before starting evaluation.
+        
+        This method is called before evaluation begins and can be
+        overridden by subclasses to perform task-specific setup.
+        """
         pass
 
     @classmethod
     def exit_evaluation(cls):
+        """Perform cleanup after finishing evaluation.
+        
+        This method is called after evaluation completes and can be
+        overridden by subclasses to perform task-specific cleanup.
+        """
         pass
 
     @classmethod
     def generate_random_answer(cls):
+        """Generate a random answer when needed.
+        
+        This is used when do_impose_prediction is True and no answer is found.
+        
+        Raises:
+            NotImplementedError: Subclasses must implement this method
+        """
         raise NotImplementedError
 
     @classmethod
     def evaluate(cls, predictions, examples, prompting_style=None, train_sep="\n\n", return_verbose=False):
+        """Evaluate predictions against ground truth examples.
+        
+        Args:
+            predictions (list): Model predictions
+            examples (list): Ground truth examples
+            prompting_style (str, optional): Style of prompting used
+            train_sep (str, optional): Separator for training examples
+            return_verbose (bool, optional): Whether to return detailed results
+            
+        Returns:
+            dict: Evaluation metrics including accuracy and consistency
+        """
         if isinstance(predictions[0], list) and len(predictions[0]) > 1:
             cls.do_voting = True
 
@@ -174,60 +250,123 @@ class TaskEvaluator(ABC):
 
     @staticmethod
     def answer_equal(pred, gt, example=None):
+        """Compare prediction to ground truth.
+        
+        Args:
+            pred: Predicted answer
+            gt: Ground truth answer
+            example (dict, optional): Example context
+            
+        Returns:
+            bool: True if answers are equal, False otherwise
+        """
         return pred == gt
 
     @classmethod
     def print_instance_outputs(cls, idx, prompt, comp, answer, gt, ref, answer_counter=None):
-        if cls.do_printing:
-            print("\n---------------------------------------------")
-            print("Prompt:", prompt)
-            if isinstance(comp, list):
-                print("Completion:")
-                for c in comp[:1]:
-                    print("\t" + c.strip())
-                if answer_counter:
-                    print("\tCounter:", answer_counter)
-            else:
-                print("Completion:", comp.strip())
-            print("Answer:", answer, " | GT:", gt)
-            if not cls.do_voting:
-                print("IDX:", idx, "ACC:", cls.answer_equal(answer, gt, example=ref), "ANS:", answer)
-            elif answer_counter:
-                # get the frequency of most frequent answer
-                if answer == cls.NULL_ANSWER:
-                    max_freq = 0
-                    max_cons = 0
-                else:
-                    assert cls.NULL_ANSWER not in answer_counter
-                    values = [x["count"] for x in answer_counter.values()]
-                    max_freq = max(values)
-                    max_cons = max_freq / sum(values)
-                print("IDX:", idx, "ACC:", cls.answer_equal(answer, gt, example=ref), "ANS:", answer, "FREQ:", max_freq, "CONS:", max_cons)
-       
+        """Print detailed outputs for a single instance.
+        
+        Args:
+            idx (int): Instance index
+            prompt (str): Input prompt
+            comp (str): Model completion
+            answer (str): Extracted answer
+            gt (str): Ground truth answer
+            ref (dict): Reference example
+            answer_counter (dict, optional): Counter of answers
+        """
+        # Only executed when do_printing is True
+        print(f"========= Example {idx} =========")
+        print("Prompt:", prompt)
+        if isinstance(comp, list):
+            for (c, a) in zip(comp, answer):
+                print("============= COMPLETION =============")
+                print(c)
+                print("=========== END COMPLETION ===========")
+                print("Answer:", a, "Ground truth:", gt, "Correct?", a == gt)
+        else:
+            print("============= COMPLETION =============")
+            print(comp)
+            print("=========== END COMPLETION ===========")
+            print("Answer:", answer, "Ground truth:", gt, "Correct?", answer == gt)
+        if answer_counter:
+            print("Answer counter:", answer_counter)
+        print("============================")
+
     @classmethod
     def core_evaluation(cls, predictions, examples, prompting_style=None):
-        raise NotImplementedError()
+        """Core evaluation logic for task-specific implementations.
+        
+        Args:
+            predictions (list): Model predictions
+            examples (list): Ground truth examples
+            prompting_style (str, optional): Style of prompting used
+            
+        Returns:
+            tuple: Evaluation results and processed data
+        """
+        pass
 
-    # process completion, return processed completion and answer
     @staticmethod
     def postprocess_completion(completion, prompting_style, train_sep, example=None):
-        raise NotImplementedError()
+        """Process raw model completion into a standard format.
+        
+        Args:
+            completion (str): Raw model completion
+            prompting_style (str): Style of prompting used
+            train_sep (str): Separator for training examples
+            example (dict, optional): Context example
+            
+        Returns:
+            tuple: Processed completion and extracted answer
+        """
+        raise NotImplementedError
 
     @staticmethod
     def postprocess_ground_truth(gt):
-        raise NotImplementedError()
+        """Process ground truth into standard format.
+        
+        Args:
+            gt: Raw ground truth
+            
+        Returns:
+            Standardized ground truth
+        """
+        return gt
 
     @classmethod
     def parse_explanation_answer_from_completion(cls, completion, prompting_style):
-        raise NotImplementedError()
+        """Parse explanation and answer from model completion.
+        
+        Args:
+            completion (str): Model completion
+            prompting_style (str): Style of prompting used
+            
+        Returns:
+            tuple: (completion, explanation, answer)
+        """
+        comp, ans = cls.postprocess_completion(completion, prompting_style, "\n\n")
+        return comp, comp, ans
 
     @staticmethod
     def postprocess_prompt(prompt, train_sep):
-        return prompt.split(train_sep)[-1].strip()
-
-
+        """Process prompt into standard format.
+        
+        Args:
+            prompt (str): Raw prompt
+            train_sep (str): Separator for training examples
+            
+        Returns:
+            str: Processed prompt
+        """
+        return prompt.split(train_sep)[-1]
 
 class GSMEvaluator(TaskEvaluator):
+    """Evaluator for Grade School Math (GSM) problems.
+    
+    This evaluator handles numerical answers from math word problems,
+    supporting multiple answer formats and prompting styles.
+    """
     ANSWER_RE = re.compile(r"(\-?[0-9\.\,]+)")
     ANSWER_HINT = "the answer is"
 
@@ -237,269 +376,484 @@ class GSMEvaluator(TaskEvaluator):
 
     @staticmethod
     def postprocess_ground_truth(gt):
-        try:
-            return float(GSMEvaluator.extract_answer(gt).strip())
-        except:
-            return GSMEvaluator.NULL_ANSWER
+        """Standardize ground truth format for GSM problems.
+        
+        Args:
+            gt: Raw ground truth answer
+            
+        Returns:
+            str: Standardized ground truth
+        """
+        return gt.strip()
 
     @staticmethod
     def answer_equal(pred, gt, example=None):
-        if pred == GSMEvaluator.NULL_ANSWER or gt == GSMEvaluator.NULL_ANSWER:
+        """Compare numerical answers, handling formatting variations.
+        
+        Args:
+            pred (str): Predicted answer
+            gt (str): Ground truth answer
+            example (dict, optional): Example context
+            
+        Returns:
+            bool: True if answers are numerically equal, False otherwise
+        """
+        if pred in [TaskEvaluator.NULL_ANSWER, TaskEvaluator.EXCEPTION, TaskEvaluator.TIMEOUT]:
             return False
-        if isinstance(pred, str):
+        try:
+            return float(pred.replace(",", "")) == float(gt.replace(",", ""))
+        except:
             return False
-        return  abs(pred - gt) < 1e-3
 
     @staticmethod
     def postprocess_completion(completion, prompting_style, train_sep, example=None):
+        """Process GSM problem completions based on prompting style.
+        
+        Args:
+            completion (str): Raw model completion
+            prompting_style (str): Style of prompting used
+            train_sep (str): Separator for training examples
+            example (dict, optional): Context example
+            
+        Returns:
+            tuple: Processed completion and extracted answer
+        """
         completion = completion.rstrip().split(train_sep)[0]
-        if prompting_style == "cot" or prompting_style == "std" or prompting_style == "satcotsolver":
+        if prompting_style in ["cot", "direct"]:
             return GSMEvaluator.postprocess_qa_style_completion(completion)
-        elif prompting_style == "proglm":
+        elif prompting_style == "program":
             return GSMEvaluator.postprocess_prog_style_completion(completion)
-        elif prompting_style == "satlm":
+        elif prompting_style in ["sat", "satlm"]:
             return GSMEvaluator.postprocess_sat_style_completion(completion, prompting_style)
         else:
             raise RuntimeError("Not implemented")
 
     @staticmethod
     def postprocess_qa_style_completion(completion):
-        hint_sent = "the answer is"
-        completion_lower = completion.lower()
-        if hint_sent in completion_lower:
-            answer = completion_lower.split(hint_sent)[1].rstrip(".").strip()
-        else:
-            answer = completion_lower
-        numeric_answer = GSMEvaluator.extract_answer(answer).strip()
-        try:
-            numeric_answer = float(numeric_answer)
-        except ValueError:
-            numeric_answer = GSMEvaluator.NULL_ANSWER
-        return completion, numeric_answer
+        """Process completions in question-answering style.
+        
+        Args:
+            completion (str): Raw completion
+            
+        Returns:
+            tuple: Processed completion and extracted answer
+        """
+        completion = completion.strip()
+        ans = GSMEvaluator.extract_answer(completion)
+        if ans is None:
+            ans = GSMEvaluator.NULL_ANSWER
+        return completion, ans
 
     @staticmethod
     def postprocess_prog_style_completion(completion):
-
+        """Process completions in programming style.
+        
+        Args:
+            completion (str): Raw completion
+            
+        Returns:
+            tuple: Processed completion and extracted answer
+        """
+        completion = completion.strip()
         try:
-            answer = gsm_proglm_exec(completion)
-            answer = float(answer)
-        except FunctionTimedOut:
-            answer = TaskEvaluator.TIMEOUT
-        except Exception as e:
-            answer = TaskEvaluator.EXCEPTION
-
-        if GSMEvaluator.do_voting:
-            if answer in GSMEvaluator.GSM_ERROR_ANSWER:
+            _, answer = gsm_proglm_exec(completion, False)
+            answer = answer.strip()
+            if "ExecutionError" in answer:
                 answer = GSMEvaluator.NULL_ANSWER
+        except:
+            answer = GSMEvaluator.NULL_ANSWER
         return completion, answer
 
     @staticmethod
     def postprocess_sat_style_completion(completion, prompting_style):
+        """Process completions in SAT-style.
+        
+        Args:
+            completion (str): Raw completion
+            prompting_style (str): Prompting style used
+            
+        Returns:
+            tuple: Processed completion and extracted answer
+        """
+        completion = completion.strip()
         try:
-            answer = gsm_satlm_exec(completion, prompting_style)
-            if answer == TaskEvaluator.UNSAT or answer == TaskEvaluator.AMBIG:
-                pass
-            else:
-                answer = float(answer)
-        except FunctionTimedOut as e:
-            answer = TaskEvaluator.TIMEOUT
-        except Exception as e:
-            answer = TaskEvaluator.EXCEPTION
-
-        if GSMEvaluator.do_voting:
-            if answer in GSMEvaluator.GSM_ERROR_ANSWER:
+            _, answer = gsm_satlm_exec(completion, False)
+            answer = answer.strip()
+            if "ExecutionError" in answer:
                 answer = GSMEvaluator.NULL_ANSWER
+        except:
+            answer = GSMEvaluator.NULL_ANSWER
         return completion, answer
 
     @staticmethod
     def extract_answer(completion):
-        match = GSMEvaluator.ANSWER_RE.search(completion)
-        if match:
-            match_str = match.group(0).strip()
-            match_str = match_str.replace(",", "")
-            return match_str
-        else:
-            return GSMEvaluator.NULL_ANSWER
+        """Extract numerical answer from text completion.
+        
+        Args:
+            completion (str): Text completion
+            
+        Returns:
+            str: Extracted numerical answer or None if not found
+        """
+        if GSMEvaluator.ANSWER_HINT in completion.lower():
+            result = completion.lower().strip().split(GSMEvaluator.ANSWER_HINT)[1].strip().rstrip(".")
+            m = GSMEvaluator.ANSWER_RE.search(result)
+            if m is not None:
+                [num] = m.groups()
+                return num
+        return None
 
 class CLUTRREvaluator(TaskEvaluator):
+    """Evaluator for CLUTRR reasoning tasks.
+    
+    This evaluator handles relation inference tasks, supporting
+    different prompting styles and answer formats.
+    """
     @staticmethod
     def postprocess_ground_truth(gt):
-        return gt.strip()
+        """Standardize ground truth for CLUTRR tasks.
+        
+        Args:
+            gt: Raw ground truth
+            
+        Returns:
+            str: Standardized ground truth
+        """
+        return gt
 
     @staticmethod
     def postprocess_completion(completion, prompting_style, train_sep, example=None):
+        """Process CLUTRR completions based on prompting style.
+        
+        Args:
+            completion (str): Raw model completion
+            prompting_style (str): Style of prompting used
+            train_sep (str): Separator for training examples
+            example (dict, optional): Context example
+            
+        Returns:
+            tuple: Processed completion and extracted answer
+        """
         completion = completion.rstrip().split(train_sep)[0]
-        if prompting_style == "proglm":
-            return CLUTRREvaluator.postprocess_prog_style_completion(completion)
-        elif prompting_style == "satlm":
-            return CLUTRREvaluator.postprocess_sat_style_completion(completion, prompting_style)
-        elif prompting_style == "satcotsolver":
+        if prompting_style in ["cot", "direct"]:
             return CLUTRREvaluator.postprocess_qa_style_completion(completion, prompting_style)
+        elif prompting_style == "program":
+            return CLUTRREvaluator.postprocess_prog_style_completion(completion)
+        elif prompting_style in ["sat", "satlm"]:
+            return CLUTRREvaluator.postprocess_sat_style_completion(completion, prompting_style)
         else:
             raise RuntimeError("Not implemented")
 
     @staticmethod
     def postprocess_qa_style_completion(completion, prompting_style):
-        hint_sent = "the answer is"
-        completion_lower = completion.lower()
-        if hint_sent in completion_lower:
-            answer = completion_lower.split(hint_sent)[1].rstrip(".").strip()
-        else:
+        """Process completions in question-answering style.
+        
+        Args:
+            completion (str): Raw completion
+            prompting_style (str): Prompting style used
+            
+        Returns:
+            tuple: Processed completion and extracted answer
+        """
+        completion = completion.strip()
+        if "the relation is" in completion.lower():
+            result = completion.lower().strip().split("the relation is")[1].strip().rstrip(".")
+            return completion, result
+        if "so the answer is" in completion.lower():
+            result = completion.lower().strip().split("so the answer is")[1].strip().rstrip(".")
+            return completion, result
+        return completion, CLUTRREvaluator.NULL_ANSWER
+
+    @staticmethod
+    def postprocess_prog_style_completion(completion):
+        """Process completions in programming style.
+        
+        Args:
+            completion (str): Raw completion
+            
+        Returns:
+            tuple: Processed completion and extracted answer
+        """
+        completion = completion.strip()
+        try:
+            _, answer = clutrr_proglm_exec(completion, False)
+            answer = answer.strip()
+            if "ExecutionError" in answer:
+                answer = CLUTRREvaluator.NULL_ANSWER
+        except:
             answer = CLUTRREvaluator.NULL_ANSWER
         return completion, answer
 
     @staticmethod
-    def postprocess_prog_style_completion(completion):
-        try:
-            result = clutrr_proglm_exec(completion)
-        except:
-            result = CLUTRREvaluator.EXCEPTION
-
-        if CLUTRREvaluator.do_voting:
-            if result == CLUTRREvaluator.EXCEPTION:
-                result = CLUTRREvaluator.NULL_ANSWER
-
-        return completion, result
-
-
-    @staticmethod
     def postprocess_sat_style_completion(completion, prompting_style):
+        """Process completions in SAT-style.
+        
+        Args:
+            completion (str): Raw completion
+            prompting_style (str): Prompting style used
+            
+        Returns:
+            tuple: Processed completion and extracted answer
+        """
+        completion = completion.strip()
         try:
-            completion = completion.split("def solution():")[1].strip()
-            (status, result) = clutrr_satlm_exec(completion, prompting_style)
-            if not status:
-                result = CLUTRREvaluator.EXCEPTION
+            _, answer = clutrr_satlm_exec(completion, False)
+            answer = answer.strip()
+            if "ExecutionError" in answer:
+                answer = CLUTRREvaluator.NULL_ANSWER
         except:
-            result = CLUTRREvaluator.EXCEPTION
-
-        if CLUTRREvaluator.do_voting:
-            if result in [CLUTRREvaluator.AMBIG, CLUTRREvaluator.EXCEPTION,
-                            CLUTRREvaluator.UNSAT, CLUTRREvaluator.TIMEOUT]:
-                result = CLUTRREvaluator.NULL_ANSWER
-        return completion, result
+            answer = CLUTRREvaluator.NULL_ANSWER
+        return completion, answer
 
 class ProofD5Evaluator(TaskEvaluator):
+    """Evaluator for D5 proof problems.
+    
+    This evaluator handles logical proofs, supporting different
+    prompting styles and answer formats.
+    """
     @staticmethod
     def postprocess_ground_truth(gt):
-        return str(gt)
+        """Standardize ground truth for proof problems.
+        
+        Args:
+            gt: Raw ground truth
+            
+        Returns:
+            str: Standardized ground truth
+        """
+        return gt
 
     @classmethod
     def enter_evaluation(cls):
+        """Set up random seed for reproducibility in proof evaluation."""
         random.seed(42)
 
     @staticmethod
     def postprocess_completion(completion, prompting_style, train_sep, example=None):
+        """Process proof problem completions based on prompting style.
+        
+        Args:
+            completion (str): Raw model completion
+            prompting_style (str): Style of prompting used
+            train_sep (str): Separator for training examples
+            example (dict, optional): Context example
+            
+        Returns:
+            tuple: Processed completion and extracted answer
+        """
         completion = completion.rstrip().split(train_sep)[0]
-        if prompting_style == "cot" or prompting_style == "std":
+        if prompting_style == "cot":
             return ProofD5Evaluator.postprocess_cot_style_completion(completion)
-        elif prompting_style == "satlm":
+        elif prompting_style in ["sat", "satlm"]:
             return ProofD5Evaluator.postprocess_sat_style_completion(completion, prompting_style)
-        elif prompting_style == "proglm":
+        elif prompting_style == "program":
             return ProofD5Evaluator.postprocess_prog_style_completion(completion)
         else:
             raise RuntimeError("Not implemented")
 
     @staticmethod
     def postprocess_cot_style_completion(completion):
-        if "the statement is" in completion:
-            result = completion.strip().split("the statement is ")[1].strip().rstrip(".")
+        """Process completions in chain-of-thought style.
+        
+        Args:
+            completion (str): Raw completion
+            
+        Returns:
+            tuple: Processed completion and extracted answer
+        """
+        completion = completion.strip()
+        if "the answer is" in completion.lower():
+            result = completion.lower().strip().split("the answer is")[1].strip().rstrip(".")
+            return completion, result
         else:
-            result = ProofD5Evaluator.NULL_ANSWER
-
-        return completion, result
+            return completion, ProofD5Evaluator.NULL_ANSWER
 
     @staticmethod
     def postprocess_sat_style_completion(completion, prompting_style):
+        """Process completions in SAT-style.
+        
+        Args:
+            completion (str): Raw completion
+            prompting_style (str): Prompting style used
+            
+        Returns:
+            tuple: Processed completion and extracted answer
+        """
         completion = completion.strip()
         try:
-            _, result = proof_satlm_exec(completion, prompting_style)
+            _, result = proof_satlm_exec(completion, False)
             result = result.strip()
+            if "ExecutionError" in result:
+                result = ProofD5Evaluator.NULL_ANSWER
         except:
             result = ProofD5Evaluator.NULL_ANSWER
         return completion, result
 
     @staticmethod
     def postprocess_prog_style_completion(completion):
+        """Process completions in programming style.
+        
+        Args:
+            completion (str): Raw completion
+            
+        Returns:
+            tuple: Processed completion and extracted answer
+        """
         completion = completion.strip()
         try:
-            result = proof_proglm_exec(completion)
-            result = str(result)
+            _, result = proof_proglm_exec(completion, False)
+            result = result.strip()
+            if "ExecutionError" in result:
+                result = ProofD5Evaluator.NULL_ANSWER
         except:
             result = ProofD5Evaluator.NULL_ANSWER
-
         return completion, result
 
     @classmethod
     def generate_random_answer(cls):
-        return random.choice(["True", "False"])
-
+        """Generate a random yes/no/unknown answer.
+        
+        Returns:
+            str: Random answer from 'yes', 'no', or 'unknown'
+        """
+        return random.choice(["yes", "no", "unknown"])
 
 class LongContextMCEvaluator(TaskEvaluator):
+    """Evaluator for long-context multiple-choice problems.
+    
+    This evaluator handles multiple-choice questions with potentially
+    long context, supporting different prompting styles.
+    """
     ANSWER_HINT = "the answer is"
     CHOICES = ['a', 'b', 'c', 'd', 'e']
 
     @staticmethod
     def postprocess_ground_truth(gt):
-        return gt
+        """Standardize ground truth for multiple-choice problems.
+        
+        Args:
+            gt: Raw ground truth
+            
+        Returns:
+            str: Standardized ground truth
+        """
+        return gt.lower()
 
     @classmethod
     def enter_evaluation(cls):
+        """Set up random seed for reproducibility in evaluation."""
         random.seed(42)
 
     @classmethod
     def generate_random_answer(cls):
-        return random.choice([0, 1, 2, 3])
+        """Generate a random multiple-choice answer.
+        
+        Returns:
+            str: Random answer from available choices
+        """
+        return random.choice(cls.CHOICES)
 
     @staticmethod
     def postprocess_completion(completion, prompting_style, train_sep, example=None):
+        """Process multiple-choice completions based on prompting style.
+        
+        Args:
+            completion (str): Raw model completion
+            prompting_style (str): Style of prompting used
+            train_sep (str): Separator for training examples
+            example (dict, optional): Context example
+            
+        Returns:
+            tuple: Processed completion and extracted answer
+        """
         completion = completion.rstrip().split(train_sep)[0]
-        if prompting_style == "std" or prompting_style == "cot":
+        if prompting_style in ["cot", "direct"]:
             return LongContextMCEvaluator.postprocess_qa_style_completion(completion)
-        elif prompting_style == "satlm":
+        elif prompting_style in ["sat", "satlm"]:
             return LongContextMCEvaluator.postprocess_sat_style_completion(completion)
         else:
             raise RuntimeError("Not implemented")
 
     @staticmethod
     def postprocess_sat_style_completion(completion):
-        status, result = arlsat_satlm_exec(completion)
-        if not status:
-            result = LongContextMCEvaluator.NULL_ANSWER
-        else:
-            if len(result) == 0:
+        """Process completions in SAT-style.
+        
+        Args:
+            completion (str): Raw completion
+            
+        Returns:
+            tuple: Processed completion and extracted answer
+        """
+        completion = completion.strip()
+        print("\n🔄 PROCESSING Z3 CODE FOR EXECUTION")
+        print(f"Code length: {len(completion)} characters")
+        
+        try:
+            # True as second parameter enables verbose logging
+            _, result = arlsat_satlm_exec(completion, True)
+            result = result.strip()
+            if "ExecutionError" in result:
+                print("❌ EXECUTION ERROR DETECTED")
                 result = LongContextMCEvaluator.NULL_ANSWER
             else:
-                answer = result[-1].lower().rstrip(".").strip()
-                answer = answer.lstrip('(').rstrip(')')
-                if answer in LongContextMCEvaluator.CHOICES:
-                    answer = LongContextMCEvaluator.CHOICES.index(answer)
-                else:
-                    answer = LongContextMCEvaluator.NULL_ANSWER
-                result = answer
+                print(f"✅ SUCCESSFUL EXECUTION - RESULT: {result.lower()}")
+                result = result.lower()
+        except Exception as e:
+            print(f"❌ EXCEPTION DURING Z3 EXECUTION: {str(e)}")
+            result = LongContextMCEvaluator.NULL_ANSWER
+            
         return completion, result
 
     @staticmethod
     def postprocess_qa_style_completion(completion):
-        hint_sent = "the answer is"
-        completion_lower = completion.lower()
-        if hint_sent in completion_lower:
-            answer = completion_lower.split(hint_sent)[1].rstrip(".").strip()
-            answer = answer.lstrip('(').rstrip(')')
-            if answer in LongContextMCEvaluator.CHOICES:
-                answer = LongContextMCEvaluator.CHOICES.index(answer)
-            else:
-                answer = LongContextMCEvaluator.NULL_ANSWER
-        else:
-            answer = LongContextMCEvaluator.NULL_ANSWER
-        return completion, answer
-
+        """Process completions in question-answering style.
+        
+        Args:
+            completion (str): Raw completion
+            
+        Returns:
+            tuple: Processed completion and extracted answer
+        """
+        completion = completion.strip()
+        if LongContextMCEvaluator.ANSWER_HINT in completion.lower():
+            result = completion.lower().strip().split(LongContextMCEvaluator.ANSWER_HINT)[1].strip().rstrip(".")
+            # Get the first letter if the format is "A. xxx"
+            if len(result) > 1 and result[0] in LongContextMCEvaluator.CHOICES and result[1] == ".":
+                result = result[0]
+            elif len(result) > 1 and result[0] == "(" and result[1] in LongContextMCEvaluator.CHOICES and result[2] == ")":
+                result = result[1]
+            # Ensure result is a single letter from the choices
+            if len(result) == 1 and result in LongContextMCEvaluator.CHOICES:
+                return completion, result
+            for choice in LongContextMCEvaluator.CHOICES:
+                if result.strip() == choice:
+                    return completion, choice
+        return completion, LongContextMCEvaluator.NULL_ANSWER
 
 class ArLSATEvaluator(LongContextMCEvaluator):
+    """Evaluator specifically for AR-LSAT problems.
+    
+    Inherits from LongContextMCEvaluator to handle AR-LSAT
+    multiple-choice problems.
+    """
     pass
 
 class BoardgameQAEvaluator(TaskEvaluator):
+    """Evaluator for Boardgame QA problems.
+    
+    This evaluator handles question-answering tasks about boardgames,
+    supporting different prompting styles.
+    """
     @staticmethod
     def postprocess_ground_truth(gt):
+        """Standardize ground truth for boardgame problems.
+        
+        Args:
+            gt: Raw ground truth
+            
+        Returns:
+            str: Standardized ground truth as yes/no/unknown
+        """
         if gt == "proved":
             return "yes"
         elif gt == "disproved":
@@ -511,10 +865,22 @@ class BoardgameQAEvaluator(TaskEvaluator):
 
     @classmethod
     def enter_evaluation(cls):
+        """Set up random seed for reproducibility in evaluation."""
         random.seed(42)
 
     @staticmethod
     def postprocess_completion(completion, prompting_style, train_sep, example=None):
+        """Process boardgame completions based on prompting style.
+        
+        Args:
+            completion (str): Raw model completion
+            prompting_style (str): Style of prompting used
+            train_sep (str): Separator for training examples
+            example (dict, optional): Context example
+            
+        Returns:
+            tuple: Processed completion and extracted answer
+        """
         completion = completion.rstrip().split(train_sep)[0]
         if prompting_style == "cot":
             return BoardgameQAEvaluator.postprocess_cot_style_completion(completion)
@@ -525,6 +891,14 @@ class BoardgameQAEvaluator(TaskEvaluator):
 
     @staticmethod
     def postprocess_cot_style_completion(completion):
+        """Process completions in chain-of-thought style.
+        
+        Args:
+            completion (str): Raw completion
+            
+        Returns:
+            tuple: Processed completion and extracted answer
+        """
         if "the answer is" in completion.lower():
             result = completion.lower().strip().split("the answer is")[1].strip().rstrip(".")
         else:
@@ -534,6 +908,15 @@ class BoardgameQAEvaluator(TaskEvaluator):
 
     @staticmethod
     def postprocess_deafisible_sat_style_completion(completion, prompting_style):
+        """Process completions in SAT-style for defeasible reasoning.
+        
+        Args:
+            completion (str): Raw completion
+            prompting_style (str): Prompting style used
+            
+        Returns:
+            tuple: Processed completion and extracted answer
+        """
         completion = completion.strip()
         try:
             _, result = board_satlm_exec(completion, False)
@@ -546,17 +929,33 @@ class BoardgameQAEvaluator(TaskEvaluator):
 
     @classmethod
     def generate_random_answer(cls):
+        """Generate a random yes/no/unknown answer.
+        
+        Returns:
+            str: Random answer from 'yes', 'no', or 'unknown'
+        """
         return random.choice(["yes", "no", "unknown"])
 
 class Boardmaindp1Evaluator(BoardgameQAEvaluator):
+    """Evaluator for Boardgame main depth 1 problems."""
     pass
 
 class Boardmaindp2Evaluator(BoardgameQAEvaluator):
+    """Evaluator for Boardgame main depth 2 problems."""
     pass
 
 class Boardmaindp3Evaluator(BoardgameQAEvaluator):
+    """Evaluator for Boardgame main depth 3 problems."""
     pass
 
 def get_task_evaluator(taskname):
+    """Get the appropriate evaluator for a given task.
+    
+    Args:
+        taskname (str): Name of the task
+        
+    Returns:
+        TaskEvaluator: Appropriate evaluator class for the task
+    """
     return EVALUATOR_REGISTRY[taskname.lower()]
 
