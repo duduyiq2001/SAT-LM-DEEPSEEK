@@ -6,7 +6,7 @@ Simplified pipeline for SAT-LM:
 3. Evaluation
 
 This version processes one problem at a time and prints detailed outputs
-without using the caching mechanisms.
+with a proper caching mechanism.
 """
 
 import os
@@ -17,13 +17,16 @@ import argparse
 import tempfile
 import hashlib
 from pathlib import Path
+import re
 
 # Add parent directory to path
 sys.path.append('.')
 
-# Import the evaluator functions only
+# Import the evaluator functions
 from evaluate_translation import extract_z3_code, execute_z3_test, parse_z3_output
 from api_utils import gpt_safe_completion
+from prog_solver.arlsat_parser import LSATSatProblem
+from prog_solver.arlsat_solver import arlsat_satlm_exec
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, 
@@ -95,25 +98,25 @@ def load_from_cache(cache_file):
             logger.warning(f"Failed to load cache: {e}")
     return None
 
-def save_to_cache(cache_file, response):
+def save_to_cache(cache_file, code_text, prompt=None):
     """Save results to cache
     
     Args:
         cache_file: Path to the cache file
         response: API response to cache
+        prompt: The prompt that generated this response
     """
-    if not args.use_cache:
-        return
+    
+
         
-    logger.info(f"Saving to cache: {cache_file}")
-    try:
-        # Create directory if it doesn't exist
-        os.makedirs(os.path.dirname(cache_file), exist_ok=True)
-        
-        with open(cache_file, 'w') as f:
-            json.dump(response, f)
-    except Exception as e:
-        logger.warning(f"Failed to save cache: {e}")
+    # Create a simplified cache entry with just code and prompt
+    simplified_response = {
+        'text': code_text,
+        'prompt': prompt
+    }
+            
+    with open(cache_file, 'w') as f:
+            json.dump(simplified_response, f)
 
 def setup_args():
     """Parse command line arguments"""
@@ -162,69 +165,179 @@ def load_test_data(task, split, start_idx, num_samples):
     logger.info(f"Loaded {len(subset)} test samples from {data_path} (indices {start_idx}-{end_idx-1})")
     return subset
 
+def read_manual_prompt(task, stage, prompt_id, style_template):
+    """Read manual prompt from file
+    
+    Args:
+        task (str): Task name
+        stage (str): Processing stage (SIG/TRANS)
+        prompt_id (str): Prompt identifier
+        style_template (str): Style template
+        
+    Returns:
+        str: Manual prompt text
+    """
+    prompt_file = f"manual_prompts/multistage_{task}.jsonline"
+    if not os.path.exists(prompt_file):
+        logger.error(f"Prompt file not found: {prompt_file}")
+        sys.exit(1)
+    
+    with open(prompt_file, 'r') as f:
+        prompt_lines = [json.loads(line) for line in f.readlines()]
+    
+    d = dict([(x["id"], x) for x in prompt_lines])
+    if prompt_id not in d:
+        logger.error(f"Prompt ID '{prompt_id}' not found in {prompt_file}")
+        sys.exit(1)
+    
+    selected = d[prompt_id]
+    assert selected["style_template"] == style_template
+    return selected["prompt"]
+
 def generate_signature_prompt(test_sample):
     """Generate a signature prompt for the given test sample"""
-    # Use the SATLM encoding function to format the question
-    formatted_question = satlm_encode_question(test_sample)
+    # Format the test sample
+    choice_str = "\n".join([f"({chr(65+i)}) {choice}" for i, choice in enumerate(test_sample.get("choices", []))])
     
-    prompt = f"""You are generating a Z3 problem signature to solve a logical reasoning task. 
-The signature should define the variables and constraints of the problem in a mathematical format.
+    # Create a clean, focused prompt
+    prompt = """# Z3 SIGNATURE GENERATION TASK
+# Focus ONLY on variable declarations and type definitions
 
-## Example:
+# INSTRUCTIONS:
+# 1. ONLY define variables and types - NO constraints or solution logic
+# 2. Setup the basic structure needed to represent the problem
+# 3. DO NOT include constraint equations or validity checks
 
-From z3 import *
+# Your signature should ONLY include:
+# - Variable declarations (Bool, Int, Enum types)
+# - Type definitions
+# - Function declarations (if needed)
+
+# Example signature (reference only):
+### problem statement
+Nine different treatments are available for a certain illness: three antibiotics—F, G, and H—three dietary regimens—M, N, and O—and three physical therapies—U, V, and W. For each case of the illness, a doctor will prescribe exactly five of the treatments, in accordance with the following conditions: If two of the antibiotics are prescribed, the remaining antibiotic cannot be prescribed. There must be exactly one dietary regimen prescribed. If O is not prescribed, F cannot be prescribed. If W is prescribed, F cannot be prescribed. G cannot be prescribed if both N and U are prescribed. V cannot be prescribed unless both H and M are prescribed.
+Question: If O is prescribed for a given case, which one of the following is a pair of treatments both of which must also be prescribed for that case?
+Choices:
+(A) F, M
+(B) G, V
+(C) N, U
+(D) U, V
+(E) U, W
+### signature
+# declare variables
+treatments = EnumSort([F, G, H, M, N, O, U, V, W])
+antibiotics = EnumSort([F, G, H])
+dietary_regimens = EnumSort([M, N, O])
+physical_therapies = EnumSort([U, V, W])
+prescribed = Function(treatments, bool)
+
+# Question: If O is prescribed for a given case, which one of the following is a pair of treatments both of which must also be prescribed for that case?
+# we check whether the options must be true
+print(check_valid())
+# REMEMBER:
+# - ONLY provide variable and type definitions
+# - DO NOT include constraints or solution logic
+# - DO NOT attempt to solve the problem
+
+# Problem to model:
+"""
+    
+    # Add the test sample to the prompt
+    prompt += f"\"\"\"\n{test_sample['context']}\nQuestion: {test_sample['question']}\nChoices:\n{choice_str}\n\"\"\"\n"
+    
+    return prompt
+
+def generate_translation_prompt(test_sample, signature_code):
+    """Generate a translation prompt for the given test sample and signature"""
+    # Format the test sample
+    choice_str = "\n".join([f"({chr(65+i)}) {choice}" for i, choice in enumerate(test_sample.get("choices", []))])
+    
+    problem_text = f"{test_sample['context']}\nQuestion: {test_sample['question']}\nChoices:\n{choice_str}"
+    
+    # Extract just the variable declarations from the signature
+    lines = signature_code.split("\n")
+    signature_lines = []
+    variable_section = False
+    
+    for line in lines:
+        if "Students =" in line or "Days =" in line or "Times =" in line or "schedule =" in line or "gives_report =" in line:
+            signature_lines.append(line.strip())
+            variable_section = True
+        elif variable_section and line.strip() and not line.strip().startswith('#') and "check_valid" not in line and "print" not in line:
+            signature_lines.append(line.strip())
+    
+    signature_part = "\n".join(signature_lines)
+    if not signature_part.strip():
+        signature_part = "# Failed to extract variable declarations from signature"
+    
+    # Create translation prompt with clear code block markers
+    prompt = f"""# Z3 TRANSLATION TASK
+# Follow these instructions EXACTLY:
+# 1. Implement a solution using the variables in the signature below
+# 2. Place your complete solution between ```python and ``` markers ONLY
+# 3. Imports MUST be at module level, not inside functions
+# 4. Return ONLY the option letter (A-E) that satisfies the constraints
+# 5. make sure your solution is using correct python syntax and is executable code
+# 6. for detailed documentation for z3, refer to https://ericpony.github.io/z3py-tutorial/guide-examples.html
+
+PROBLEM:
+\"\"\"
+{problem_text}
+\"\"\"
+
+VARIABLE DEFINITIONS FROM SIGNATURE:
+\"\"\"
+{signature_part}
+\"\"\"
+
+INSTRUCTIONS:
+- Implement constraints based on problem description
+- Check each option systematically
+- Return only the letter of the valid option
+- IMPORTANT: Place code between ```python and ``` markers
+
+EXAMPLE FORMAT:
+```python
+from z3 import *
+
+# Variable definitions from signature
+{signature_part}
 
 def check_valid():
-    solver = Solver()
-    
-    # Define variables
-    # ...
-    
-    # Define constraints
-    # ...
-    
-    # Check if constraints are satisfiable
-    if solver.check() == sat:
-        model = solver.model()
-        # Extract solution
-        # ...
-        print("The answer is X")
-    else:
-        print("No solution found")
+    # Your implementation here
+    return "A"  # Return only the option letter
 
-check_valid()
+if __name__ == "__main__":
+    result = check_valid()
+    print(result)
+```
 
-## Now, create a Z3 signature for the following problem:
-
-{formatted_question}
-
-Start your Z3 signature with "from z3 import *":
+NOW IMPLEMENT YOUR SOLUTION:
 """
     return prompt
 
-def generate_translation_prompt(test_sample, signature):
-    """Generate a translation prompt for the given test sample and signature"""
-    # Use the SATLM encoding function to format the question
-    formatted_question = satlm_encode_question(test_sample)
+def extract_clean_code(response_text):
+    """
+    Enhanced extraction function that isolates Python code blocks
+    marked with ```python and ``` from the response text.
     
-    prompt = f"""You are translating a problem signature into executable Z3 code that will solve a logical reasoning task.
-
-## Problem:
-
-{formatted_question}
-
-## Signature:
-{signature}
-
-## Instructions:
-1. Implement the signature as executable Z3 code
-2. Make sure to include the check_valid() function
-3. Your code should print the answer clearly as 'The answer is X' where X is A, B, C, D, or E
-4. Include proper error handling and ensure the code is well-structured
-
-## Executable Z3 code:
-"""
-    return prompt
+    Args:
+        response_text (str): The full response text from the model
+        
+    Returns:
+        str: The extracted code, or None if no valid code block found
+    """
+    # Match the code block after "NOW IMPLEMENT YOUR SOLUTION:"
+    import re
+    pattern = r"NOW IMPLEMENT YOUR SOLUTION:\s*```python\s*([\s\S]*?)\s*```"
+    matches = re.findall(pattern, response_text)
+    
+    if matches and len(matches) > 0:
+        code = matches[0]
+        return code
+    
+    # Fall back to the original extract_z3_code logic if no python code blocks found
+    return extract_z3_code(response_text)
 
 def process_single_example(args, test_sample, example_idx):
     """Process a single example through the full pipeline"""
@@ -255,10 +368,11 @@ def process_single_example(args, test_sample, example_idx):
     
     # Check cache for signature
     signature_cache_file = get_cache_filename(args, "signature", signature_prompt, args.start_idx + example_idx)
-    signature_responses = load_from_cache(signature_cache_file)
+    cached_data = load_from_cache(signature_cache_file)
     
-    if signature_responses:
+    if cached_data:
         print(f"Using cached signature from {signature_cache_file}")
+        signature_text = cached_data.get('text', '')
     else:
         print("Generating signature...")
         signature_responses = gpt_safe_completion(
@@ -268,37 +382,50 @@ def process_single_example(args, test_sample, example_idx):
             stop_token=None,
             model=args.model
         )
-        # Save to cache
-        save_to_cache(signature_cache_file, signature_responses)
-    
-    # Extract the signature text from the API response
-    if not signature_responses:
-        print("SIGNATURE GENERATION FAILED - No response received")
-        return False
-    
-    # Debug info about response structure
-    signature_text = ""
-    if isinstance(signature_responses, dict) and 'choices' in signature_responses:
-        # Handle API response format for chat models
-        print("Extracting signature from chat completion response...")
-        choices = signature_responses.get('choices', [])
-        if choices and len(choices) > 0:
-            # Get the message content from the first choice
-            message = choices[0].get('message', {})
-            if message and 'content' in message:
-                signature_text = message['content']
-            else:
-                # Try text field for completions API
-                signature_text = choices[0].get('text', '')
-                
-    if not signature_text:
-        print("SIGNATURE GENERATION FAILED - Could not extract signature text")
-        print(f"Response structure: {signature_responses.keys() if isinstance(signature_responses, dict) else type(signature_responses)}")
-        return False
+        # # Save to cache with the prompt
+        # save_to_cache(signature_cache_file, signature_responses, signature_prompt)
+        
+        # Extract the signature text from the API response
+        if not signature_responses:
+            print("SIGNATURE GENERATION FAILED - No response received")
+            return False
+        
+        # Extract text from response
+        signature_text = ""
+        if isinstance(signature_responses, dict) and 'choices' in signature_responses:
+            # Handle API response format for chat models
+            print("Extracting signature from chat completion response...")
+            choices = signature_responses.get('choices', [])
+            if choices and len(choices) > 0:
+                # Get the message content from the first choice
+                message = choices[0].get('message', {})
+                if message and 'content' in message:
+                    signature_text = message['content']
+                    
+                else:
+                    # Try text field for completions API
+                    signature_text = choices[0].get('text', '')
+                    
+        if not signature_text:
+            print("SIGNATURE GENERATION FAILED - Could not extract signature text")
+            print(f"Response structure: {signature_responses.keys() if isinstance(signature_responses, dict) else type(signature_responses)}")
+            return False
     
     print("\nSIGNATURE OUTPUT:")
     print("-" * 50)
-    print(signature_text)
+    # We'll use the LSATSatProblem parser to validate the signature
+    try:
+        signature_code = extract_z3_code(signature_text)
+        if signature_code:
+            print(signature_code)
+            save_to_cache(signature_cache_file, signature_code, signature_prompt)
+        else:
+            print(signature_text)
+            save_to_cache(signature_cache_file, signature_text, signature_prompt)
+            print("WARNING: Could not extract clean Z3 code from signature")
+    except Exception as e:
+        print(signature_text)
+        print(f"WARNING: Error parsing signature: {str(e)}")
     print("-" * 50)
     
     # Step 2: Run Translation
@@ -309,10 +436,11 @@ def process_single_example(args, test_sample, example_idx):
     
     # Check cache for translation
     translation_cache_file = get_cache_filename(args, "translation", translation_prompt, args.start_idx + example_idx)
-    translation_responses = load_from_cache(translation_cache_file)
+    cached_data = load_from_cache(translation_cache_file)
     
-    if translation_responses:
+    if cached_data:
         print(f"Using cached translation from {translation_cache_file}")
+        translation_text = cached_data.get('text', '')
     else:
         print("Generating translation...")
         translation_responses = gpt_safe_completion(
@@ -322,71 +450,93 @@ def process_single_example(args, test_sample, example_idx):
             stop_token=None,
             model=args.model
         )
-        # Save to cache
-        save_to_cache(translation_cache_file, translation_responses)
+        # # Save to cache with the prompt
+        # save_to_cache(translation_cache_file, translation_responses, translation_prompt)
+        
+        # Extract the translation text from the API response
+        if not translation_responses:
+            print("TRANSLATION FAILED - No response received")
+            return False
+        
+        # Extract translation text
+        translation_text = ""
+        if isinstance(translation_responses, dict) and 'choices' in translation_responses:
+            # Handle API response format for chat models
+            print("Extracting translation from chat completion response...")
+            choices = translation_responses.get('choices', [])
+            if choices and len(choices) > 0:
+                # Get the message content from the first choice
+                message = choices[0].get('message', {})
+                if message and 'content' in message:
+                    translation_text = message['content']
+                else:
+                    # Try text field for completions API
+                    translation_text = choices[0].get('text', '')
+                    
+        if not translation_text:
+            print("TRANSLATION FAILED - Could not extract translation text")
+            print(f"Response structure: {translation_responses.keys() if isinstance(translation_responses, dict) else type(translation_responses)}")
+            return False
     
-    # Extract the translation text from the API response
-    if not translation_responses:
-        print("TRANSLATION FAILED - No response received")
-        return False
     
-    # Extract translation text
-    translation_text = ""
-    if isinstance(translation_responses, dict) and 'choices' in translation_responses:
-        # Handle API response format for chat models
-        print("Extracting translation from chat completion response...")
-        choices = translation_responses.get('choices', [])
-        if choices and len(choices) > 0:
-            # Get the message content from the first choice
-            message = choices[0].get('message', {})
-            if message and 'content' in message:
-                translation_text = message['content']
-            else:
-                # Try text field for completions API
-                translation_text = choices[0].get('text', '')
-                
-    if not translation_text:
-        print("TRANSLATION FAILED - Could not extract translation text")
-        print(f"Response structure: {translation_responses.keys() if isinstance(translation_responses, dict) else type(translation_responses)}")
-        return False
-    
-    print("\nTRANSLATION OUTPUT:")
-    print("-" * 50)
-    print(translation_text)
-    print("-" * 50)
-    
-    # Step 3: Evaluation
+    # Step 3: Evaluation using arlsat_satlm_exec
     print("\nSTEP 3: EVALUATION")
     print("=" * 50)
     
-    # Extract Z3 code
-    code = extract_z3_code(translation_text)
-    if not code:
-        print("FAILED TO EXTRACT Z3 CODE")
-        return False
+    # First try to extract a clean code block using our enhanced extractor
+    clean_code = extract_clean_code(translation_text)
+    if clean_code:
+        print("Extracted clean code block from response")
+        print(clean_code)
+        save_to_cache(translation_cache_file, clean_code, translation_prompt)
+        success, output = execute_z3_test(clean_code)
+    else:
+        print("WARNING: Could not extract clean code block, trying full response")
+        # Fall back to original behavior
+        success, output = execute_z3_test(translation_text)
     
-    print("\nEXTRACTED Z3 CODE:")
-    print("-" * 50)
-    print(code)
-    print("-" * 50)
-    
-    # Create tmp directory if it doesn't exist
-    os.makedirs("tmp", exist_ok=True)
-    
-    # Execute Z3 code without modification
-    execution_success, output = execute_z3_test(code, timeout=15.0)
-    
-    if not execution_success:
+    if not success:
         print(f"EXECUTION FAILED: {output}")
-        return False
+        
+        # Fallback to standard execution
+        print("\nTrying fallback execution...")
+        if clean_code:
+            code = clean_code
+        else:
+            code = extract_z3_code(translation_text)
+            
+        if not code:
+            print("FAILED TO EXTRACT Z3 CODE")
+            return False
+        
+        # Create tmp directory if it doesn't exist
+        os.makedirs("tmp", exist_ok=True)
+        
+        execution_success, output = execute_z3_test(code, timeout=15.0)
+        if not execution_success:
+            print(f"FALLBACK EXECUTION FAILED: {output}")
+            return False
     
     print("\nZ3 EXECUTION OUTPUT:")
     print("-" * 50)
-    print(output)
+    if isinstance(output, list):
+        print("\n".join(output))
+    else:
+        print(output)
     print("-" * 50)
     
     # Parse output to get answer
-    answer = parse_z3_output(output)
+    if isinstance(output, list):
+        # If output is a list of lines, find the first line with a letter
+        for line in output:
+            if line.strip() in ["A", "B", "C", "D", "E"]:
+                answer = line.strip()
+                break
+        else:
+            # If no direct letter, try to parse
+            answer = parse_z3_output("\n".join(output))
+    else:
+        answer = parse_z3_output(output)
     
     if not answer:
         print("COULD NOT DETERMINE ANSWER")
@@ -403,7 +553,10 @@ def process_single_example(args, test_sample, example_idx):
         
         print("\nEVALUATION RESULTS:")
         print("-" * 50)
-        print(f"RAW Z3 OUTPUT: {output.strip()}")
+        if isinstance(output, list):
+            print(f"RAW Z3 OUTPUT: {output}")
+        else:
+            print(f"RAW Z3 OUTPUT: {output.strip()}")
         print(f"PARSED ANSWER: {answer}")
         
         # Print predicted choice
@@ -422,7 +575,10 @@ def process_single_example(args, test_sample, example_idx):
     else:
         print("\nEVALUATION RESULTS:")
         print("-" * 50)
-        print(f"RAW Z3 OUTPUT: {output.strip()}")
+        if isinstance(output, list):
+            print(f"RAW Z3 OUTPUT: {output}")
+        else:
+            print(f"RAW Z3 OUTPUT: {output.strip()}")
         print(f"PARSED ANSWER: {answer}")
         # Get the available choices
         choices = test_sample.get('choices', [])
